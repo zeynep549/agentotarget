@@ -1,369 +1,88 @@
-# agentotargetimport math
-import csv
-import random
-import time
-import numpy as np
-from sklearn.linear_model import SGDClassifier
-
-class Object:
-    def __init__(self, x, y, direction):
-        self.x = round(x, 2)
-        self.y = round(y, 2)
-        self.direction = direction
-        
-        
-class World:
-    def __init__(self, width, height, obstacle_color, target_color):
-        self.width = width
-        self.height = height
-        self.obstacle_color = obstacle_color
-        self.target_color = target_color
-        self.target_x = round(self.width * np.random.rand(), 2)
-        self.target_y = round(self.height * np.random.rand(), 2)
-        self.obstacles = []
-
-    def add_obstacle(self, x, y):
-        self.obstacles.append((round(x, 2), round(y, 2)))
-
-    def get_color_at_position(self, position):
-        if position[0] < 0 or position[0] > self.width or position[1] < 0 or position[1] > self.height:
-            return self.obstacle_color
-        if position in self.obstacles:
-            return self.obstacle_color
-        return None
-
-class Agent(Object):
-    def __init__(self, x, y, direction, world,info):
-        super().__init__(x, y, direction)
-        self.view_distance = 2
-        self.perception_range = 15
-        self.classifier = SGDClassifier()
-        self.prediction_module = PredictionModule()
-        self.optimization_module = OptimizationModule()
-        self.goal_x = round(world.width * np.random.rand(), 2)
-        self.goal_y = round(world.height * np.random.rand(), 2)
-        self.exactTargetX = world.target_x
-        self.exactTargetY = world.target_y
-        self.info = info
-    
-
-    def sense(self, world):
-        def detect_color(world, position):
-            return world.get_color_at_position(position)
-
-        def calculate_relative_position(agent_position, object_position):
-            return (round(object_position[0] - agent_position[0], 2), round(object_position[1] - agent_position[1], 2))
-
-        def sense_world(agent_position, vision_range, world):
-            detected_objects = {
-                'obstacles': [],
-                'target': None
-            }
-
-            for angle in range(360):
-                for distance in range(1, vision_range + 1):
-                    object_position = (
-                        round(agent_position[0] + distance * math.cos(math.radians(angle)), 2),
-                        round(agent_position[1] + distance * math.sin(math.radians(angle)), 2)
-                    )
-
-                    color = detect_color(world, object_position)
-
-                    if color == world.obstacle_color:
-                        relative_position = calculate_relative_position(agent_position, object_position)
-                        if 0 <= relative_position[0] <= 200 and 0 <= relative_position[1] <= 100:
-                            detected_objects['obstacles'].append(relative_position)
-                            self.prediction_module.update_experience(relative_position, None)
-                            break
-                    elif color == world.target_color:
-                        relative_position = calculate_relative_position(agent_position, object_position)
-                        if 0 <= relative_position[0] <= 200 and 0 <= relative_position[1] <= 100:
-                            detected_objects['target'] = relative_position
-                            self.prediction_module.update_experience(None, relative_position)
-                            break
-
-            return detected_objects
-
-        sensed_data = sense_world((self.x, self.y), self.view_distance, world)
-        return sensed_data
-
-    def make_decision(self, sensed_data):
-        obstacle_prediction = 0
-        target_prediction = 0
-
-        if sensed_data['target'] is not None:
-            prediction_result = self.prediction_module.prediction(sensed_data)
-            target_prediction = prediction_result['target_prediction']
-
-        if sensed_data['obstacles']:
-            prediction_result = self.prediction_module.prediction(sensed_data)
-            obstacle_prediction = prediction_result['obstacle_prediction']
-
-        if obstacle_prediction == 1:
-            return 'avoid_obstacle'
-        elif target_prediction == 1:
-            return 'move_towards_target'
-        else:
-            return 'move_towards_goal'
-
-    def learn(self, sensed_data):
-        if sensed_data['target'] is not None:
-            label = 1
-        else:
-            label = 0
-
-        if sensed_data['obstacles']:
-            X_train_obstacle = np.array(sensed_data['obstacles'])
-            y_train_obstacle = np.full(X_train_obstacle.shape[0], label)
-
-            y_train_obstacle = y_train_obstacle.flatten()
-            self.prediction_module.update_experience(X_train_obstacle, None)
-
-        if sensed_data['target'] is not None:
-            X_train_target = np.array(sensed_data['target'])
-            y_train_target = np.full(X_train_target.shape[0], label)
-
-            y_train_target = y_train_target.flatten()
-            self.prediction_module.update_experience(None, X_train_target)
-
-    def move(self, decision, sensed_data):
-        self.x = round(self.x,2)
-        self.y = round(self.y,2)
-        if self.info == 1:
-            self.move_towards(self.exactTargetX, self.exactTargetY, sensed_data)
-        else:
-            if decision == 'avoid_obstacle':
-                self.avoid_obstacle()
-            elif decision == 'move_towards_target':
-               
-                detected_objects = self.sense(self.world)
-                path, success = self.optimization_module.decision(detected_objects, self.optimization_module,
-                                                                (self.goal_x, self.goal_y))
-
-                if not success:
-                    path = self.optimization_module.optimize_path(path)
-                    self.optimization_module.adjust_parameters(self.optimization_module)
-                    success_rate = self.optimization_module.feedback_loop(path)
-
-                    if success_rate < self.optimization_module.predefined_threshold:
-                        self.optimization_module.trial_and_error_method(self.optimization_module, detected_objects,
-                                                                        (self.goal_x, self.goal_y))
-                    else:
-                        self.optimization_module.update(path, success)
-                self.x = round(self.x,2)
-                self.y = round(self.y,2)
-                self.x, self.y = round(path[-1][0], 2), round(path[-1][1], 2)
-            else:
-                if sensed_data['target'] is not None:
-                    self.move_towards(self.goal_x, self.goal_y, sensed_data)
-                else:
-                    self.random_movement()
-
-
-    def distance_to(self, x, y):
-        return round(np.sqrt((self.x - x) ** 2 + (self.y - y) ** 2), 2)
-
-    def move_towards(self, target_x, target_y, sensed_data):
-        
-        self.x = round(self.x,2)
-        self.y = round(self.y,2)
-        predicted_target_position = None
-        if sensed_data['target'] is not None:
-            predicted_target_position = self.prediction_module.predict_target((self.x, self.y))
-
-        if predicted_target_position is not None:
-            target_x, target_y = predicted_target_position
-
-        if abs(self.x - self.goal_x) <= 6.5 and abs(self.y - self.goal_y) <= 7.5 and (abs(self.x - self.exactTargetX) > 6.5 or abs(self.y - self.exactTargetY) > 7.5 ):
-            self.goal_x  = round(100 * np.random.rand(), 2)
-            self.goal_y = round(200 * np.random.rand(), 2)
-
-        angle_to_target = np.arctan2(target_y - self.y, target_x - self.x)
-        distance_to_target = self.distance_to(target_x, target_y)
-
-        if distance_to_target > 0.1:
-            self.x += round(3 * np.cos(angle_to_target), 2)
-            self.y += round(3 * np.sin(angle_to_target), 2)
-        else:
-            self.x = round(target_x, 2)
-            self.y = round(target_y, 2)
-
-    def avoid_obstacle(self):
-        self.x = round(self.x,2)
-        self.y = round(self.y,2)
-        self.x -= round(np.cos(self.direction), 2)
-        self.y -= round(np.sin(self.direction), 2)
-
-    def random_movement(self):
-        self.direction = round(np.random.rand() * 2 * np.pi, 2)
-        self.x = round(self.x,2)
-        self.y = round(self.y,2)
-        self.x += round(np.cos(self.direction), 2)
-        self.y += round(np.sin(self.direction), 2)
-
-
-class PredictionModule:
-    def __init__(self):
-        self.obstacle_classifier = SGDClassifier(random_state=42)
-        self.target_classifier = SGDClassifier(random_state=42)
-        self.obstacle_training_data = np.empty((0, 200))  
-
-        self.target_training_data = np.empty((0, 200))  
-
-        self.obstacle_labels = []
-        self.target_labels = []
-
-    def train_obstacle_classifier(self):
-        X = self.obstacle_training_data  
-        y = np.array(self.obstacle_labels)
-        self.obstacle_classifier.partial_fit(X, y, classes=[0, 1])
-
-    def train_target_classifier(self):
-        X = self.target_training_data
-
-        y = np.array(self.target_labels)
-        self.target_classifier.partial_fit(X, y, classes=[0, 1])
-
-
-    def update_experience(self, obstacle_coordinates, target_coordinates):
-        if obstacle_coordinates is not None:
-            for coord in obstacle_coordinates:
-                features = np.zeros(200)
-                features[:len(coord)] = coord 
-                self.obstacle_training_data = np.vstack([self.obstacle_training_data, features])
-                self.obstacle_labels.append(1)
-
-        if target_coordinates is not None:
-            for coord in target_coordinates:
-                features = np.zeros(200)
-                features[:len(coord)] = coord 
-                self.target_training_data = np.vstack([self.target_training_data, features])
-                self.target_labels.append(1)
-                
-    def predict_obstacles(self, current_features):
-        self.train_obstacle_classifier()
-        predicted_obstacle = self.obstacle_classifier.predict([current_features])
-        return predicted_obstacle[0]
-
-    def predict_target(self, current_features):
-        self.train_target_classifier()
-        predicted_target = self.target_classifier.predict([current_features])
-        return predicted_target[0]
-
-    def prediction(self, input_data):
-        self.train_obstacle_classifier()
-        self.train_target_classifier()
-
-        obstacle_prediction = self.predict_obstacles(input_data['obstacles'])
-        target_prediction = self.predict_target(input_data['target'])
-
-        prediction_result = {
-            'obstacle_prediction': obstacle_prediction,
-            'target_prediction': target_prediction
-        }
-        return prediction_result
-
-
-class OptimizationModule:
-    def __init__(self):
-        self.predefined_threshold = 0.7
-
-    def decision(self, detected_objects, learning_module, target):
-        path = learning_module.decide_best_path(detected_objects, target)
-        success = learning_module.evaluate_path(path, detected_objects)
-        return path, success
-
-    def optimize_path(self, path):
-        np.random.shuffle(path)
-        return path
-
-    def adjust_parameters(self, learning_module):
-        learning_module.predefined_threshold += round(np.random.randn() * 0.01, 2)
-
-    def feedback_loop(self, path):
-        return round(np.random.random(), 2)
-
-    def trial_and_error_method(self, learning_module, detected_objects, target):
-        new_path = learning_module.create_new_path(detected_objects, target)
-        success = learning_module.evaluate_path(new_path, detected_objects)
-        learning_module.update(new_path, success)
-
-    def optimization(self, agent, learning_module, target):
-        agent_active = True
-
-        while agent_active:
-            detected_objects = agent.sense_surroundings()
-            path, success = self.decision(detected_objects, learning_module, target)
-
-            if not success:
-                path = self.optimize_path(path)
-                self.adjust_parameters(learning_module)
-                success_rate = self.feedback_loop(path)
-
-                if success_rate < self.predefined_threshold:
-                    self.trial_and_error_method(learning_module, detected_objects, target)
-                else:
-                    learning_module.update(path, success)
-
-
-
-
-    
-world = World(100, 200, 'red', 'green')
-agent = Agent(round(np.random.rand() * 100, 2), round(np.random.rand() * 200, 2), np.random.rand() * 2 * np.pi, world,0)
-agent.goal_x = round(agent.goal_x, 2)
-agent.goal_y = round(agent.goal_y, 2)
-        
-
-agent.info = 0
-agent.goal_x = round(np.random.rand() * 100, 2)
-agent.goal_y = round(np.random.rand() * 200, 2)
-
-    
-for _ in range(60):
-         
-    x = round(np.random.rand() * 100, 2)
-    y = round(np.random.rand() * 200, 2)
-    new_obstacle = (x, y)
-
-       
-    while new_obstacle in world.obstacles:
-            
-        x = round(np.random.rand() * 100, 2)
-        y = round(np.random.rand() * 200, 2)
-        new_obstacle = (x, y)
-
-            
-    world.add_obstacle(x, y)
-
-for i in range(100):
-    sensed_data = agent.sense(world)
-    decision = agent.make_decision(sensed_data)
-    agent.move(decision,sensed_data)
-    agent.learn(sensed_data)
-    agent.x = round(agent.x,2)
-    agent.y = round(agent.y,2)
-
-
-    if i == 0:
-        print(f"Hedef Konumu: x={world.target_x}, y={world.target_y}")
-
-    if sensed_data['target'] is not None and i == 0:
-        goal_x, goal_y = sensed_data['target']
-        agent.set_goal(world.target_x, world.target_y)
-        print(f"Belirlenen Hedef Konumu: x={goal_x}, y={goal_y}")
-
-
-    print(f"Agent Konumu: x={agent.x}, y={agent.y}")
-
-            
-    if abs(agent.x - world.target_x) <= 6.5 and abs(agent.y - world.target_y) <= 7.5:
-        print("Başarı! Agent belirlenen hedefe ulaştı.")
-        print(i)
-        break
-
-
-
-
-
+İnsan müdahalesini azaltarak özellikle güvenlik ve verimlilik açısından önemli avantajlar sunan otonom araçların, gerçek dünya koşullarındaki karmaşık ve öngörülemeyen çevresel faktörlerle başa çıkabilme yeteneklerinin geliştirilmesi gerekmektedir. Bu çalışma, engelleri algılama ve hedefe yönlendirme yeteneklerini entegre eden, otonom araçların bu zorlukları aşmasına yardımcı olacak basitleştirilmiş bir model önermektedir. Model, algılama mekanizmaları aracılığıyla elde edilen verileri analiz ederek test senaryolarında engelleri tespit etmekte ve hedefe doğru yönelmektedir. Bu, otonom araçların güvenli ve etkin bir şekilde yollarını bulma yeteneklerini artırarak, gerçek hayatla bağdaştırıldığında trafik kazalarının azalmasına, ulaşım maliyetlerinin düşmesine ve genel yaşam kalitesinin iyileşmesine katkıda bulunabilir. Biz de altı temel modüle sahip, çevresini algılayabilen, karar verebilen ve rotasını iyileştirebilen bu otonom araç modelini tasarlarken bu gibi durumlardan yola çıktık.
+Anahtar Kelimeler: Otonom araç, çevresel algılama, engel tespiti, hedef yönlendirme, renk algılama, gerçek dünya simülasyonu.
+
+Giriş
+Teknolojinin hızla geliştiği günümüz dünyasında, otonom araçlar, ulaşım sektöründe devrim yaratma potansiyeline sahiptir. Bu yenilikçi araçlar, insan müdahalesine daha az ihtiyaç duyarak, güvenlik, verimlilik ve erişilebilirlik açısından önemli avantajlar sunmaktadır. Ancak, otonom araçların gerçek dünya koşullarında etkili bir şekilde çalışabilmesi için, karmaşık ve öngörülemeyen çevresel faktörlerle başa çıkabilme yeteneği hayati önem taşımaktadır. Bu çalışma, engelleri algılama ve hedefe yönlendirme yeteneklerini bütünleştirerek, otonom araçların bu zorlukların üstesinden gelmesine yardımcı olacak basitleştirilmiş bir model sunmaktadır.
+Otonom araçlar sayesinde yolda önceden beklenmeyen durumlar ile mevcut navigasyon sistemlerine göre daha iyi başa çıkılabilir. Gerçek dünya senaryoları ani durum değişiklikleri ve beklenmeyen engeller içerdiğinden bu oldukça önemli bir avantajdır. Bu çalışmanın amacı, bu tür dinamik ve belirsiz ortamlarda etkin bir şekilde yolunu bulabilen bir otonom araç modeli geliştirmektir. Modelimiz, çevresel algılamaları ve stratejik karar verme süreçlerini dengede tutarak, aracın çevresindeki engelleri algılamasını ve bu engelleri aşarak belirlenen hedefe ulaşmasını sağlar.
+Bu model, çeşitli algılama mekanizmaları aracılığıyla çevresel verileri toplar ve bu verileri analiz ederek hem engelleri algılamak hem de hedefe yönlendirmek için kullanır. Engeller ve hedefler, test senaryolarında rastgele oluşturulan koşullarda denenir, böylece modelin gerçek dünyaya benzer karmaşık durumlarla başa çıkma yeteneği değerlendirilir.
+Bu değerlendirmeler sadece araçlarla sınırlı değildir, gündelik hayatta karşımıza çıkan birçok örnekte bu modellemede ele alınan durumu görebiliriz. Burada üstünde durmak istediğimiz konu, belleğini, deneyimlerini ve kendi geliştirdiği problem çözme yeteneğini kullanabilen ve bunları hareketlerine yansıtabilen otonom bir ajan yaratmaktır ve bu ajan karar mekanizmasına sahip olduğundan en çok da canlılarla ortak özelliklere sahiptir.
+
+MODEL
+Genel Bakış
+Modelimiz, bir 'Dünya' ortamında hareket eden ve çevresindeki engelleri algılayıp bu engellere tepki veren bir 'Ajan' içerir. Modelimizde hareket, karar verme, öğrenme ve algılama modüllerinden farklı olarak tahmin ve optimizasyon modüllerine yer verdik. Bu modüller birlikte çalışarak ajanın otonom hareketini sağlarlar. Ajanın temel amacı, belirlenen bir hedefe, engelleri algılayarak ve bunlardan kaçınarak ulaşmaktır. Kilit nokta ajanın başlangıçta hiçbir bilgiye sahip olmamasıdır, tüm bilgileri kendi deneyimleyerek edinir ve belleğine ekler.
+
+Dünya ve Engel Tanımı
+'Dünya' sınıfı, ajanın hareket ettiği ortamı temsil eder. Bu ortam belirli bir genişlik ve yüksekliğe sahiptir ve içinde rastgele konumlandırılmış engeller bulunur. Her engel, dünyanın içinde belirli bir konuma yerleştirilir ve bu engeller ajanın hareketini sınırlar. Bu engeller dünyaya eklenirken hiçbir nesnede çakışma olmamasına önem verilir.
+
+Ajan ve Algılama
+ Ajan, 'Object' sınıfından türetilmiştir ve x, y koordinatları ile bir yöne sahiptir. Ajanın algılama fonksiyonu, 360 derecelik bir açıda ve belirli bir algılama mesafesi içinde çevresini tarar. Algılanan her nesne, engel veya hedef olabilir ve bu bilgi, ajanın karar verme sürecinde kullanılır. Bu bilgiye erişirken ajan renk özelliklerini kullanır. Çevresindeki nesnelerin renklerini görebilir ve eğer kırmızıysa engel, siyahsa hedef olduğuna karar verir. Kolaylık açısından dünya sınırlarının dışını da kırmızı olarak belirledik ve bu sayede ajan dışarı çıkmaya yaklaştığında aynı engellerde olduğu gibi geri çekilebilme özelliğine sahiptir. Psikolojik açıdan değerlendirdiğimizde ise araç için kırmızı renk korku duygusu uyandırır demek mümkündür. 
+
+Öğrenme ve Tahmin Modülü
+Öğrenme ve Tahmin Modülü, ajanın çevresel verileri toplayarak ve bu verileri analiz ederek engelleri ve hedefleri sınıflandırmasını sağlar. Bu modüller, Stochastic Gradient Descent (SGD) sınıflandırıcısını kullanarak, ajanın karar verme sürecinde önemli rol oynar. Modül, engeller ve hedefler için ayrı ayrı eğitilerek, her iki tür nesnenin algılanması ve tahmini üzerinde uzmanlaşır. 
+SGDClassifier, lineer sınıflandırıcıların etkili bir şekilde eğitilmesini sağlayan bir makine öğrenimi algoritmasıdır. Bu algoritma, her iterasyonda küçük veri gruplarını kullanarak modeli günceller, bu da büyük veri kümeleri üzerinde çalışırken hız ve verimlilik avantajı sağlar. SGD, hata gradyanını hesaplayarak ve bu gradyanı kullanarak modelin ağırlıklarını güncelleyerek çalışır. Bu süreç, modelin hedef ve engelleri doğru bir şekilde sınıflandırmasını sağlamak için veri üzerinde tekrar tekrar gerçekleştirilir. Bu algoritmanın tekrarlanması optimizasyon modülüne destek olur.
+Eğitim süreci, ajanın algıladığı engeller ve hedefler üzerinden gerçekleşir. Ajan, çevresindeki nesneleri algıladıkça, bu veriler öğrenme modülüne gönderilir. Her bir nesne, belirli özellikler (örneğin, konum, boyut, renk) içeren bir veri noktası olarak temsil edilir. Bu veri, SGDClassifier'a beslenir ve model bu veri üzerinde kısmi eğitim (partial fit) gerçekleştirir. Model, engelleri '1' (varlık) veya '0' (yokluk) olarak sınıflandırırken, hedef için benzer bir sınıflandırma yapar.
+Model, yeni veri noktaları geldikçe sürekli olarak güncellenir ve iyileştirilir. Bu, ajanın dinamik bir ortamda sürekli olarak öğrenmesini ve adaptasyonunu sağlar. Ajan, yeni bir nesne algıladığında, öğrenme modülü bu nesnenin engel mi yoksa hedef mi olduğuna karar verir ve bu bilgiyi ajanın karar verme sürecine iletir.
+
+Optimizasyon Modülü 
+Optimizasyon Modülü, ajanın karşılaştığı engelleri ve hedefi dikkate alarak en uygun yolu belirler. Bu modül, ajanın karar verme sürecinde önemli bir role sahiptir ve ajanın hedefe en etkili şekilde ulaşmasını sağlamak için yolları optimize eder.
+Bu modül, ilk olarak mevcut durumu değerlendirir ve ajanın hedefe ulaşması için potansiyel yolları belirler. Bu yollar, engellerin konumlarına, ajanın mevcut konumuna ve hedefin yerine göre hesaplanır. Daha sonra, bu yolların her biri, başarı şansı ve etkinlik açısından değerlendirilir. Değerlendirme süreci, yolun uzunluğu, engellere olan yakınlığı ve hedefe olan mesafeyi dikkate alarak yapılır.
+Optimizasyon modülü, başarısız veya verimsiz bulunan yolları optimize etmek için çeşitli stratejiler kullanır. Bu, yolların yeniden sıralanması, engellere daha az yaklaşacak şekilde rotanın ayarlanması veya alternatif yolların keşfedilmesi şeklinde olabilir. Bu süreç, ajanın karşılaştığı engeller ve hedef konumuna göre dinamik bir şekilde uyarlanır.
+Ajanın karşılaştığı duruma bağlı olarak, optimizasyon modülü farklı karar verme stratejileri uygular. Eğer ajan, hedefe ulaşmak için net bir yol bulamazsa, modül, deneme-yanılma yöntemleri veya geri bildirim döngüleri kullanarak yeni yollar oluşturabilir ve test edebilir. Bu süreç, ajanın hedefe ulaşma şansını maksimize etmek ve engellerden etkili bir şekilde kaçınmak için sürekli olarak güncellenir.
+Bu modül ajanın deneyimleri ne kadar fazlaysa o kadar iyi çalışır, bu nedenle başlangıçta rota hesaplama konusunda istenen başarıyı elde etmesi zordur ve konumlar rastgele belirlendiğinden tahmin edilemez. Fakat zaman geçtikçe ajanın konumlar hakkında edindiği bilgiler sayesinde rota iyileştirilir. Bunun örneklerini de test ettiğimiz koşul1’de gözlemlemek mümkündür, 5’in katları olan denemelerde başarıya yaklaşılmasında bu modülün etkisi olmuştur. Her çalıştırdığımızda deneyimleri arttığından bir önceki denemeye göre daha iyi bir performans göstereceğinden neredeyse emin olabiliriz. 
+
+Karar Verme ve Hareket
+Ajan, algıladığı verilere dayanarak karar verme fonksiyonu aracılığıyla kararlarını verir. Bu kararlar, engellerden kaçınma, hedefe doğru hareket etme veya belirlenen bir hedefe doğru ilerleme şeklinde olabilir. Karar verildikten sonra, ajan hareket fonksiyonu aracılığıyla hareket eder ve bu hareket, algılanan engeller ve hedefe göre ayarlanır. Araç hareket esnasında ilk çalıştırmada dünyayı bilmediğinden hedefin olduğunu düşündüğü rastgele bir konuma yönlenir ve orada hedef yoksa farklı bir konum belirler ve algoritma bu şekilde devam eder. Dünyayı öğrenmeye başladığında ise tahmin modülü tahmin yapabilir duruma gelir ve hareket esnasında bu tahmin sonuçları kullanılır. Tüm bunların sonucu olarak, 100 deneme içeren koşullarda neden başlangıç denemelerinde genel olarak hedefe ulaşılamadığı anlaşılmış olur
+Hedefe Ulaşma
+Ajanın asıl amacı, belirlenen hedefe ulaşmaktır. Bu, algılanan hedefin konumuna göre hareket ederek ve engellerden kaçınarak gerçekleştirilir. Ajan, hedefe ulaştığında başarılı bir sonuca ulaşır. Özellikle başlangıçta başarısızlık oranlarının fazla olduğunu bildiğimiz için bir denemedeki hareketi 100 kereyle sınırlandırdık. Yine de rastgele konumlardan dolayı testlerimiz sırasında bazen hedefe uygun bir noktada başlayıp 10 hamle içerisinde başarıya ulaştığını da gözlemleyebildik ama bu durum oldukça nadir olarak karşımıza çıktı.
+
+Modüllerin Bağlantısı
+Tüm modüllerin birbirleriyle bilgi alışverişi gerçekleştirmesi oldukça önemlidir, bu nedenle modelimizde özellikle bağlantıların üstünde durduk. Algı modülünün bilgisini tüm modüller kullanır çünkü hepsinin aracın deneyimlerine ihtiyacı vardır. Hareket ve karar verme modülleri ise oldukça bağlantılıdır çünkü algı modülünün bilgisiyle elde edilen karar hareket modülüne gönderilir ve nasıl bir hareket izleneceği bu sayede belirlenmiş olur. Tahmin ve öğrenme modülleri birlikte çalışır diyebiliriz ve öğrenme modülünde işlenen bilgiler tahmin modülünde detaylandırılır ve uygun koordinat tahminleri yapıldığında bu bilgiyi hareket modülünün kullanması sağlanır. Optimizasyon modülünden gelen bilgi ise hareket modülünde kullanılır ve hedefe olan rotanın optimize edilmesi dolayısıyla da hareket süresinin kısalması hedeflenir. Özetleyecek olursak, modüller birbirlerinden oldukça bilgi aldığından tüm modüllerin bağlantılarının eksiksiz olması modelin düzgün çalışmasını sağlayan en önemli noktadır. 
+
+Test
+Modelimizin performansını değerlendirmek için iki farklı koşul altında bir dizi simülasyon gerçekleştirilecektir. Bu koşullar, ajanın engelleri algılama ve hedefe ulaşma yeteneğini farklı senaryolarda test etmek için tasarlanmıştır.
+
+Koşul 1
+Bu koşul, ajanın öğrenme kabiliyetini ve aynı senaryoya adaptasyonunu test eder. Aynı engel ve hedef düzenlemeleriyle karşılaştıkça, ajanın zaman içinde daha etkili yollar bulması ve hedefe daha hızlı ulaşması beklenir.
+
+Koşul 2 
+Bu koşulda, her denemede nesnenin, engellerin ve hedefin konumu rastgele belirlenir.
+Bu, her denemede ajanın yeni ve öngörülemeyen senaryolarla karşılaşmasını sağlar.
+Bu koşul, ajanın yeni ortamlara ne kadar hızlı ve etkili bir şekilde uyum sağlayabildiğini test eder. Her yeni denemede, ajanın karar verme ve navigasyon stratejilerini yeniden değerlendirmesi ve optimize etmesi gerekecektir.
+
+Test Algoritmaları ve Beklenen Sonuçlar
+Her iki koşulda da ajanın algılama, karar verme ve hareket etme algoritmaları aynı kalacak, ancak karşılaştığı senaryolar değişecektir.
+Koşul 1'de, ajanın tekrarlanan denemelerle daha verimli hale gelmesi ve hedefe daha hızlı ulaşması beklenir. Bu, öğrenme ve adaptasyon mekanizmalarının etkinliğini gösterir.
+Koşul 2'de ise, ajanın her denemede yeni ve benzersiz engel düzenlemelerine uyum sağlaması gerekecektir. Bu durumda, ajanın genel başarımı, çevresel adaptasyon yeteneğine ve karşılaştığı her yeni senaryoya hızlı bir şekilde nasıl yanıt verebildiğine bağlı olacaktır.
+Sonuç Değerlendirme:
+Performans, ajanın hedefe ulaşma süresi, alınan yolun uzunluğu ve engellerle olan etkileşim sayısı gibi metriklerle değerlendirilecektir.
+
+Test Sonuçları
+Her iki koşulun sonuçlarını modelimizde karşılaştırdığımızda belirgin farklar ortaya çıktı. İlk koşul altında 5’in katı olan denemelerde model olabildiğince öğrenmesini tamamladığından başta hedefe hiç ulaşamıyorken sonlarda kısa sürede ulaşmaya başladı. Aynı koşul altında her ne kadar rastgele bir düzen olsa da son denemelere yaklaşıldıkça modelin performansının genel olarak arttığını gözlemledik ve bu ulaşmak istediğimiz bir sonuçtu. İkinci koşul altında ise araç öncekilerdeki bilgilerden dolayı yanlış tahminlerde bulunabiliyor. Çünkü önceki deneyimlerini belleğinde tuttuğunda diğer deneme sırasında orada engel olmasa da olduğunu düşündüğünden hareketi etkileniyor. 
+Modelin gerçekçiliği açısından incelendiğinde aslında bu durumun normal olduğu sonucuna vardık. Çünkü model aynı canlılarda olduğu gibi belirli bir bilgi ona verildikten sonra bundan etkilenme eğiliminde oluyor ve bu da sonraki hareketine yansıyor. Biz bunu psikolojik deneylerde karşımıza çıkan sonuçlarla bağdaştırdık. Her ne kadar farklılıklar olsa da aslında “öğrenilmiş çaresizlik” durumuna benzer bir hareket sergiliyor. Örneğin; hedefin bir noktada olmadığını gördükten sonra diğer deneme sırasında değiştiğini bilse de deneyimleri oraya gitmeme yönelimi göstermesine sebep oluyor. 
+
+
+ 
+
+Şekil 1: Koşul 1 altındaki 100 denemenin başarı oranları
+
+
+ 
+  Şekil 2: Koşul 2 altındaki 100 denemenin başarı oranları
+
+Sonuç
+Bu çalışmada, otonom araçların karmaşık ve değişken çevresel koşullarda etkin bir şekilde hareket etmesini sağlamak amacıyla bir model geliştirdik. Modelimiz, 'Dünya', 'Ajan', Öğrenme Modülü, Tahmin Modülü ve Optimizasyon Modülü gibi bileşenleri içerir ve bu bileşenlerin birbiriyle etkileşimi sayesinde ajanın hedefe ulaşmasını sağlar.
+Modelimizin temel özelliği, ajanın başlangıçta çevresel koşullar hakkında hiçbir bilgiye sahip olmaması ve bu bilgileri kendi deneyimleri aracılığıyla edinmesidir. Bu süreç, SGDClassifier kullanılarak gerçekleştirilen öğrenme ve tahmin mekanizmaları ile desteklenir. Ajan, çevresindeki nesneleri renklerine göre algılar ve bu bilgileri engel ve hedefi sınıflandırmak için kullanır. Öğrenme süreci boyunca ajan, çevresindeki nesneler hakkında daha fazla bilgi edinir ve bu bilgileri gelecekteki hareketlerinde kullanır.
+Optimizasyon Modülü, ajanın hedefe ulaşmak için izleyeceği rotayı belirler ve bu rotayı sürekli olarak optimize eder. Bu modül, ajanın karşılaştığı duruma bağlı olarak farklı stratejiler uygular ve ajanın hedefe ulaşma şansını artırır.
+İki farklı koşul altında gerçekleştirilen testler, modelimizin performansını değerlendirmemizi sağladı. Koşul 1'de, ajanın aynı çevresel koşullara maruz kaldığı ve bu koşullara adaptasyonunu test ettik. Sonuçlar, ajanın tekrarlanan denemelerle performansını artırdığını gösterdi. Koşul 2'de ise, her denemede çevresel koşulların rastgele belirlendiği ve ajanın bu yeni koşullara adaptasyonunu test ettik. Bu koşul, ajanın çevresel değişikliklere hızlı bir şekilde yanıt verebilme yeteneğini ortaya koydu.
+Genel olarak, modelimiz, otonom araçların gerçek dünya koşullarında karşılaşabileceği engelleri algılama ve bunlardan kaçınarak hedefe ulaşma yeteneğini gösterdi. Ayrıca, modelin öğrenme ve adaptasyon yetenekleri, karmaşık ve öngörülemeyen çevresel koşullara etkili bir şekilde yanıt verebilmesini sağladı.
+Sonuç olarak, bu çalışma, otonom araçların gelişimine önemli bir katkı sağlayabilir ve bu araçların güvenliği ve etkinliğini artırmada önemli bir rol oynayabilir. Ayrıca, bu modelin geliştirilmesi ve farklı senaryolarda test edilmesi, otonom araç teknolojisinin daha da ilerlemesine yardımcı olacaktır. Bu model, karmaşık çevresel koşullara uyum sağlayabilen, etkili bir şekilde öğrenebilen ve hedefe ulaşmak için gerekli stratejileri geliştirebilen otonom araçların geliştirilmesi için sağlam bir temel oluşturmaktadır.
+
+Psikolojik Değerlendirme
+Modelimizin psikolojik açıdan değerlendirilmesi, otonom araçların karar verme süreçlerini anlamak için önemli bir perspektif sunar. Modelde, ajanın çevresel koşullara adaptasyonu ve öğrenme süreci, insan psikolojisinin bazı yönlerini yansıtır. Özellikle, ajanın algıladığı engellerin renklerine göre farklı tepkiler vermesi, insanların duygusal ve bilişsel tepkilerine benzer bir mekanizmayı andırır. Örneğin, kırmızı renk genellikle tehlike veya uyarı anlamına gelir ve modelimizde ajan, kırmızı renkli engelleri algıladığında kaçınma tepkisi gösterir. Bu, insanların renklerle ilişkilendirdikleri duygusal tepkilerle paralellik gösterir.
+Ayrıca, ajanın öğrenme süreci, insanların deneyimlerden öğrenme ve bu öğrenmeleri gelecekteki kararlarında kullanma sürecine benzer. Ajan, tekrarlanan denemeler boyunca çevresel koşullar hakkında bilgi toplar ve bu bilgiyi, gelecekte karşılaşabileceği benzer durumlarla başa çıkmak için kullanır. Bu süreç, insanların geçmiş deneyimlerden ders çıkararak gelecekte daha iyi kararlar almasına benzer bir mekanizma sergiler.
+Modelin optimizasyon süreci ise, insanların karşılaştığı problemlere çözüm bulma ve bu çözümleri sürekli olarak iyileştirme eğilimini yansıtır. Ajan, karşılaştığı engelleri ve hedefi dikkate alarak en uygun yolu belirler ve bu yolun başarısız olduğu durumlarda alternatif stratejiler geliştirir. Bu, insanların karşılaştıkları zorluklar karşısında esnek olma yeteneklerine benzer.
+Son olarak, ajanın her yeni denemede farklı senaryolara adaptasyonu, insanların değişen çevresel koşullara uyum sağlama kabiliyetini yansıtır. Her yeni denemede, ajanın karşılaştığı duruma göre farklı kararlar alması ve bunları uygulaması, insanların değişen koşullara hızlı bir şekilde yanıt verme ve uyum sağlama yeteneğine paraleldir.
+Bu psikolojik açıdan yapılan değerlendirme, modelimizin insan davranış ve karar verme süreçlerine benzer yönler taşıdığını göstermektedir. Bu benzerlikler, otonom araçların insan benzeri karar verme süreçlerini taklit ederek daha etkili ve güvenli bir şekilde hareket etmesini sağlayabilir. Bu nedenle, modelimizin psikolojik açıdan incelenmesi, otonom araçların gelişimine önemli katkılarda bulunabilir.
+Referanslar
+P. Baldi, "Gradient descent learning algorithm overview: a general dynamical systems perspective," in IEEE Transactions on Neural Networks, vol. 6, no. 1, pp. 182-195, Jan. 1995, doi: 10.1109/72.363438.
 
